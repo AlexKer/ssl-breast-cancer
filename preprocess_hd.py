@@ -1,3 +1,23 @@
+"""
+The preprocessed data follow structure:
+ISPY1_sub
+----/ISPY1_1001
+--------/T1
+------------dcm files
+--------/T2
+--------/T3
+--------/T4
+----/ISPY1_1002
+....
+
+My code is stupid, it only contains subjects that have 4 time stage and >=180 dcm files in each time stage, 
+which means every subject which contains <60 dcm in their PE/SER folders will be skipped.
+This preprocessing is just for the first stage of this project, and I will improve it in the future.
+
+The preprocessed data just have 81 subjects
+"""
+
+
 import os
 import shutil
 import numpy as np
