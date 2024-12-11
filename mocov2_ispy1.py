@@ -371,6 +371,9 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--results-dir', default='./results', type=str, metavar='PATH',
                     help='path to cache (default: none)')
+parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
+                    metavar='W', help='weight decay (default: 1e-4)',
+                    dest='wd')
 
 args = parser.parse_args('')
 args.cos = True
