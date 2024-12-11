@@ -13,6 +13,9 @@ import numpy as np
 from tqdm import tqdm
 from preprocess_ispy1 import SAVE_DIR  # Import the save directory from preprocess_ispy1
 
+# Define device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 class ISPY1Pair(torch.utils.data.Dataset):
     """ISPY1 Dataset that loads pre/first/second post-contrast volumes for MoCo training"""
     def __init__(self, json_path, transform=None, debug=False):
@@ -21,7 +24,7 @@ class ISPY1Pair(torch.utils.data.Dataset):
         if debug:
             self.data = self.data[:4]  # Only use 4 samples for testing
         self.transform = transform
-        self.save_dir = SAVE_DIR  # From preprocess_ispy1.py
+        self.save_dir = SAVE_DIR  # From preprocess_ispy1
 
     def __getitem__(self, index):
         item = self.data[index]
@@ -231,7 +234,6 @@ class ModelMoCo(nn.Module):
         logits /= self.T
 
         # labels: positive key indicators
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
 
         loss = F.cross_entropy(logits, labels)
@@ -356,124 +358,151 @@ class ISPY1Dataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.data)
 
-# Main training setup
-parser = argparse.ArgumentParser(description='Train MoCo on ISPY1')
-parser.add_argument('--batch-size', default=8, type=int, help='batch size')
-parser.add_argument('--epochs', default=200, type=int)
-parser.add_argument('--lr', default=0.03, type=float)
-parser.add_argument('--moco-dim', default=128, type=int)
-parser.add_argument('--moco-k', default=2048, type=int)
-parser.add_argument('--moco-m', default=0.99, type=float)
-parser.add_argument('--moco-t', default=0.07, type=float)
-parser.add_argument('--bn-splits', default=8, type=int)
-parser.add_argument('--symmetric', action='store_true')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--results-dir', default='./results', type=str, metavar='PATH',
-                    help='path to cache (default: none)')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)',
-                    dest='wd')
+# Move all the execution code into a main() function
+def main():
+    # Data loading
+    train_transform = MRITransform()
+    train_data = ISPY1Pair(json_path='path/to/ispy1_train_data.json', 
+                          transform=train_transform,
+                          debug=True)  # Enable debug mode for testing
+    train_loader = DataLoader(
+        train_data,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,  # Set to 0 for debugging
+        pin_memory=True,
+        drop_last=True
+    )
 
-args = parser.parse_args('')
-args.cos = True
+    # Data loading for memory bank and testing
+    memory_data = ISPY1Dataset(json_path='path/to/ispy1_train_data.json', 
+                              train=True, 
+                              transform=train_transform)
+    memory_loader = DataLoader(
+        memory_data,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,  # Set to 0 for debugging
+        pin_memory=True
+    )
 
-# Data loading
-train_transform = MRITransform()
-train_data = ISPY1Pair(json_path='path/to/ispy1_train_data.json', transform=train_transform)
-train_loader = DataLoader(
-    train_data,
-    batch_size=args.batch_size,
-    shuffle=True,
-    num_workers=4,
-    pin_memory=True,
-    drop_last=True
-)
+    test_data = ISPY1Dataset(json_path='path/to/ispy1_test_data.json', 
+                            train=False, 
+                            transform=train_transform)
+    test_loader = DataLoader(
+        test_data,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,  # Set to 0 for debugging
+        pin_memory=True
+    )
 
-# Data loading for memory bank and testing
-memory_data = ISPY1Dataset(json_path='path/to/ispy1_train_data.json', train=True, transform=train_transform)
-memory_loader = DataLoader(
-    memory_data,
-    batch_size=args.batch_size,
-    shuffle=False,
-    num_workers=4,
-    pin_memory=True
-)
+    # Create model
+    model = ModelMoCo(
+        dim=args.moco_dim,
+        K=args.moco_k,
+        m=args.moco_m,
+        T=args.moco_t,
+        bn_splits=args.bn_splits,
+        symmetric=args.symmetric,
+    ).to(device)
 
-test_data = ISPY1Dataset(json_path='path/to/ispy1_test_data.json', train=False, transform=train_transform)
-test_loader = DataLoader(
-    test_data,
-    batch_size=args.batch_size,
-    shuffle=False,
-    num_workers=4,
-    pin_memory=True
-)
+    # Define optimizer
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=0.9)
 
-# Create model
-model = ModelMoCo(
-    dim=args.moco_dim,
-    K=args.moco_k,
-    m=args.moco_m,
-    T=args.moco_t,
-    bn_splits=args.bn_splits,
-    symmetric=args.symmetric,
-).to(device)
+    # Load model if resume
+    epoch_start = 1
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print(f"=> loading checkpoint '{args.resume}'")
+            checkpoint = torch.load(args.resume)
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            epoch_start = checkpoint['epoch'] + 1
+            print(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+        else:
+            print(f"=> no checkpoint found at '{args.resume}'")
 
-# Define optimizer
-optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=0.9)
-
-# Load model if resume
-epoch_start = 1
-if args.resume:
-    if os.path.isfile(args.resume):
-        print(f"=> loading checkpoint '{args.resume}'")
-        checkpoint = torch.load(args.resume)
-        model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        epoch_start = checkpoint['epoch'] + 1
-        print(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
-    else:
-        print(f"=> no checkpoint found at '{args.resume}'")
-
-# Logging setup
-results = {'train_loss': [], 'test_acc@1': []}
-if not os.path.exists(args.results_dir):
-    os.makedirs(args.results_dir)
-
-# Dump args
-with open(os.path.join(args.results_dir, 'args.json'), 'w') as f:
-    json.dump(args.__dict__, f, indent=2)
-
-# Training loop
-for epoch in range(epoch_start, args.epochs + 1):
-    # Train
-    train_loss = train(model, train_loader, optimizer, epoch, args)
-    results['train_loss'].append(train_loss)
+    # Logging setup
+    results = {'train_loss': [], 'test_acc@1': []}
+    if not os.path.exists(args.results_dir):
+        os.makedirs(args.results_dir)
     
-    # Test
-    test_acc_1 = test(model.encoder_q, memory_loader, test_loader, epoch, args)
-    results['test_acc@1'].append(test_acc_1)
-    
-    # Save statistics
-    data_frame = pd.DataFrame(data=results, index=range(epoch_start, epoch + 1))
-    data_frame.to_csv(os.path.join(args.results_dir, 'log.csv'), index_label='epoch')
-    
-    # Save model
-    save_dict = {
-        'epoch': epoch,
-        'state_dict': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-    }
-    
-    # Save latest model
-    torch.save(save_dict, os.path.join(args.results_dir, 'model_last.pth'))
-    
-    # Save best model based on test accuracy
-    if test_acc_1 == max(results['test_acc@1']):
-        torch.save(save_dict, os.path.join(args.results_dir, 'model_best.pth'))
-    
-    print(f'Epoch [{epoch}/{args.epochs}] - Train Loss: {train_loss:.4f}, Test Acc@1: {test_acc_1:.2f}%')
+    # Dump args
+    with open(os.path.join(args.results_dir, 'args.json'), 'w') as f:
+        json.dump(args.__dict__, f, indent=2)
+        
+    # Training loop
+    for epoch in range(epoch_start, args.epochs + 1):
+        train_loss = train(model, train_loader, optimizer, epoch, args)
+        results['train_loss'].append(train_loss)
+        
+        # Test
+        test_acc_1 = test(model.encoder_q, memory_loader, test_loader, epoch, args)
+        results['test_acc@1'].append(test_acc_1)
+        
+        # Save statistics
+        data_frame = pd.DataFrame(data=results, index=range(epoch_start, epoch + 1))
+        data_frame.to_csv(os.path.join(args.results_dir, 'log.csv'), index_label='epoch')
+        
+        # Save model
+        save_dict = {
+            'epoch': epoch,
+            'state_dict': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+        }
+        
+        # Save latest model
+        torch.save(save_dict, os.path.join(args.results_dir, 'model_last.pth'))
+        
+        # Save best model based on test accuracy
+        if test_acc_1 == max(results['test_acc@1']):
+            torch.save(save_dict, os.path.join(args.results_dir, 'model_best.pth'))
+        
+        print(f'Epoch [{epoch}/{args.epochs}] - Train Loss: {train_loss:.4f}, Test Acc@1: {test_acc_1:.2f}%')
 
-print("Training completed!")
+    print("Training completed!")
+
+if __name__ == '__main__':
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Train MoCo on ISPY1')
+    parser.add_argument('--batch-size', default=8, type=int, help='batch size')
+    parser.add_argument('--epochs', default=200, type=int)
+    parser.add_argument('--lr', default=0.03, type=float)
+    parser.add_argument('--moco-dim', default=128, type=int)
+    parser.add_argument('--moco-k', default=2048, type=int)
+    parser.add_argument('--moco-m', default=0.99, type=float)
+    parser.add_argument('--moco-t', default=0.07, type=float)
+    parser.add_argument('--bn-splits', default=8, type=int)
+    parser.add_argument('--symmetric', action='store_true')
+    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('--results-dir', default='./results', type=str, metavar='PATH',
+                        help='path to cache (default: none)')
+    parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
+                        metavar='W', help='weight decay (default: 1e-4)',
+                        dest='wd')
+    parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
+                        help='number of warmup epochs (default: 10)')
+
+    args = parser.parse_args()
+    args.cos = True
+    
+    # For testing purposes, override some args
+    args.epochs = 2  # Run fewer epochs
+    args.batch_size = 2  # Smaller batch size
+    args.moco_k = 16  # Smaller queue size
+    
+    # Setup results directory and logging
+    results = {'train_loss': [], 'test_acc@1': []}
+    if not os.path.exists(args.results_dir):
+        os.makedirs(args.results_dir)
+    
+    # Dump args
+    with open(os.path.join(args.results_dir, 'args.json'), 'w') as f:
+        json.dump(args.__dict__, f, indent=2)
+        
+    # Run main function
+    main()
 
 
