@@ -15,9 +15,11 @@ from preprocess_ispy1 import SAVE_DIR  # Import the save directory from preproce
 
 class ISPY1Pair(torch.utils.data.Dataset):
     """ISPY1 Dataset that loads pre/first/second post-contrast volumes for MoCo training"""
-    def __init__(self, json_path, transform=None):
+    def __init__(self, json_path, transform=None, debug=False):
         with open(json_path, 'r') as f:
             self.data = json.load(f)
+        if debug:
+            self.data = self.data[:4]  # Only use 4 samples for testing
         self.transform = transform
         self.save_dir = SAVE_DIR  # From preprocess_ispy1.py
 
@@ -229,7 +231,8 @@ class ModelMoCo(nn.Module):
         logits /= self.T
 
         # labels: positive key indicators
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
 
         loss = F.cross_entropy(logits, labels)
 
@@ -245,7 +248,8 @@ def train(net, data_loader, train_optimizer, epoch, args):
 
     total_loss, total_num, train_bar = 0.0, 0, tqdm(data_loader)
     for vol_t0, vol_t1 in train_bar:
-        vol_t0, vol_t1 = vol_t0.cuda(non_blocking=True), vol_t1.cuda(non_blocking=True)
+        vol_t0 = vol_t0.to(device)
+        vol_t1 = vol_t1.to(device)
 
         loss = net(vol_t0, vol_t1)
 
@@ -326,8 +330,8 @@ class ISPY1Dataset(torch.utils.data.Dataset):
         self.transform = transform
         self.train = train
         self.save_dir = SAVE_DIR
-        # PCR status from json
-        self.targets = [item['pcr'] for item in self.data]  
+        # PCR status from json is used as the target/label
+        self.targets = [item['label'] for item in self.data]  
         self.classes = sorted(list(set(self.targets)))
 
     def __getitem__(self, index):
@@ -410,7 +414,7 @@ model = ModelMoCo(
     T=args.moco_t,
     bn_splits=args.bn_splits,
     symmetric=args.symmetric,
-).cuda()
+).to(device)
 
 # Define optimizer
 optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=0.9)
