@@ -15,6 +15,7 @@ from preprocess_ispy1 import SAVE_DIR  # Import the save directory from preproce
 
 # Define device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+SAVE_DIR = 'save_dir'
 
 class ISPY1Pair(torch.utils.data.Dataset):
     """ISPY1 Dataset that loads pre/first/second post-contrast volumes for MoCo training"""
@@ -30,31 +31,37 @@ class ISPY1Pair(torch.utils.data.Dataset):
         item = self.data[index]
         patient_id = item['patient_id']
         
-        # Load data according to preprocess_ispy1.py format
-        # t0 data
-        t0_data = np.load(f"{self.save_dir}/{patient_id}/t0.npy")  # This contains all phases
-        t0_pre = t0_data[0]    # First phase is pre
-        t0_first = t0_data[1]  # Second phase is first post
-        t0_second = t0_data[2] # Third phase is second post
+        # Load all phases for t0 and t1
+        t0_pre = np.load(f"{self.save_dir}/{patient_id}_t0_pre.npy")
+        t0_first = np.load(f"{self.save_dir}/{patient_id}_t0_first.npy")
+        t0_second = np.load(f"{self.save_dir}/{patient_id}_t0_second.npy")
+        t0_third = t0_second  # Using second post-contrast as fourth phase for now
+        print(f"t0pre:",t0_pre.shape)
+        print(f"t0first:",t0_first.shape)
+        print(f"t0sec:",t0_second.shape)
+        print(f"t0third:",t0_third.shape)
+
+        t1_pre = np.load(f"{self.save_dir}/{patient_id}_t1_pre.npy")
+        t1_first = np.load(f"{self.save_dir}/{patient_id}_t1_first.npy")
+        t1_second = np.load(f"{self.save_dir}/{patient_id}_t1_second.npy")
+        t1_third = t1_second  # Using second post-contrast as fourth phase for now
+
+        # Stack all phases together - now 4 phases like shuffle_ssl
+        vol_t0 = np.stack([t0_pre, t0_first, t0_second, t0_third], axis=0)  # Shape: (4, D, H, W)
+        vol_t1 = np.stack([t1_pre, t1_first, t1_second, t1_third], axis=0)  # Shape: (4, D, H, W)
         
-        # t1 data
-        t1_data = np.load(f"{self.save_dir}/{patient_id}/t1.npy")
-        t1_pre = t1_data[0]
-        t1_first = t1_data[1]
-        t1_second = t1_data[2]
-        
-        # Stack phases
-        vol_t0 = np.stack([t0_pre, t0_first, t0_second], axis=0)
-        vol_t1 = np.stack([t1_pre, t1_first, t1_second], axis=0)
-        
-        vol_t0 = torch.FloatTensor(vol_t0)
+        # Convert to tensor
+        vol_t0 = torch.FloatTensor(vol_t0)  
         vol_t1 = torch.FloatTensor(vol_t1)
 
         if self.transform is not None:
             vol_t0 = self.transform(vol_t0)
             vol_t1 = self.transform(vol_t1)
 
-        return vol_t0, vol_t1
+        # Stack the two timepoints together
+        volumes = torch.stack([vol_t0, vol_t1], dim=0)  # Shape: (2, 4, D, H, W)
+        
+        return volumes
 
     def __len__(self):
         return len(self.data)
@@ -71,17 +78,9 @@ class MRITransform:
             std = volume[i].std()
             volume[i] = (volume[i] - mean) / (std + 1e-7)
         
-        # Random crop if volume is larger than target size
-        if all(volume.shape[1:] > torch.tensor(self.size)):
-            d, h, w = volume.shape[1:]
-            d_start = torch.randint(0, d - self.size[0], (1,))
-            h_start = torch.randint(0, h - self.size[1], (1,))
-            w_start = torch.randint(0, w - self.size[2], (1,))
-            
-            volume = volume[:, 
-                          d_start:d_start + self.size[0],
-                          h_start:h_start + self.size[1], 
-                          w_start:w_start + self.size[2]]
+        # Resize the volume to a smaller size to prevent memory issues
+        # Use adaptive pooling to get desired size
+        volume = F.adaptive_avg_pool3d(volume.unsqueeze(0), self.size).squeeze(0)
         
         return volume
 
@@ -127,11 +126,12 @@ class ModelBase(nn.Module):
         
         self.net = nn.Sequential(
             # Initial conv layer for 3 input channels (pre, first, second post-contrast)
-            nn.Conv3d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            norm_layer(64),
+            nn.Conv3d(3, 32, kernel_size=3, stride=1, padding=1, bias=False),
+            norm_layer(32),
             nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=2),
             
-            self._make_layer(64, 64, 2, norm_layer),
+            self._make_layer(32, 64, 2, norm_layer),
             self._make_layer(64, 128, 2, norm_layer, stride=2),
             self._make_layer(128, 256, 2, norm_layer, stride=2),
             
@@ -160,25 +160,67 @@ class ModelBase(nn.Module):
 class ModelMoCo(nn.Module):
     def __init__(self, dim=128, K=2048, m=0.99, T=0.07, bn_splits=8, symmetric=False):
         super(ModelMoCo, self).__init__()
-
         self.K = K
         self.m = m
         self.T = T
         self.symmetric = symmetric
 
-        # create the encoders
+        # Create encoders for each phase
         self.encoder_q = ModelBase(feature_dim=dim, bn_splits=bn_splits)
         self.encoder_k = ModelBase(feature_dim=dim, bn_splits=bn_splits)
 
-        # initialize the key encoder to have same parameters as query encoder
+        # Initialize key encoder
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)
             param_k.requires_grad = False
 
-        # create the queue
+        # Create queue
         self.register_buffer("queue", torch.randn(dim, K))
         self.queue = nn.functional.normalize(self.queue, dim=0)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
+    def forward(self, volumes):
+        # volumes shape: (batch_size, 2, 4, D, H, W)
+        batch_size, num_timepoints, *rest = volumes.shape
+        
+        # Reshape like train_shuffle
+        volumes = volumes.view(batch_size * num_timepoints, *rest)  # Shape: (batch_size*2, 4, D, H, W)
+        
+        # Split phases like shuffle_ssl
+        first = volumes[:, 0, :, :, :]     # Pre-contrast
+        second = volumes[:, 1, :, :, :]    # First post-contrast
+        third = volumes[:, 2, :, :, :]     # Second post-contrast
+        fourth = volumes[:, 3, :, :, :]    # Third post-contrast
+        
+        # Get features for all phases
+        f1 = self.encoder_q(first)    
+        f2 = self.encoder_k(second)  
+        f3 = self.encoder_k(third)
+        f4 = self.encoder_k(fourth)
+        
+        # Normalize features
+        f1 = nn.functional.normalize(f1, dim=1)
+        f2 = nn.functional.normalize(f2, dim=1)
+        f3 = nn.functional.normalize(f3, dim=1)
+        f4 = nn.functional.normalize(f4, dim=1)
+
+        # Compute logits for all phases
+        l_pos1 = torch.einsum('nc,nc->n', [f1, f2]).unsqueeze(-1)
+        l_pos2 = torch.einsum('nc,nc->n', [f1, f3]).unsqueeze(-1)
+        l_pos3 = torch.einsum('nc,nc->n', [f1, f4]).unsqueeze(-1)
+        l_neg = torch.einsum('nc,ck->nk', [f1, self.queue.clone().detach()])
+
+        # Combine all logits
+        logits = torch.cat([l_pos1, l_pos2, l_pos3, l_neg], dim=1)
+        logits /= self.T
+
+        # Labels: first three positions are positive
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+
+        # Update queue with all positive features
+        self._dequeue_and_enqueue(torch.cat([f2, f3, f4], dim=0))
+
+        return logits, labels
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -200,49 +242,6 @@ class ModelMoCo(nn.Module):
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr
-
-    def forward(self, im_q, im_k):
-        """
-        Input:
-            im_q: a batch of query images
-            im_k: a batch of key images
-        Output:
-            loss
-        """
-        # compute query features
-        q = self.encoder_q(im_q)  # queries: NxC
-        q = nn.functional.normalize(q, dim=1)
-
-        # compute key features
-        with torch.no_grad():  # no gradient to keys
-            self._momentum_update_key_encoder()  # update the key encoder
-
-            k = self.encoder_k(im_k)  # keys: NxC
-            k = nn.functional.normalize(k, dim=1)
-
-        # compute logits
-        # Einstein sum is more intuitive
-        # positive logits: Nx1
-        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
-        # negative logits: NxK
-        l_neg = torch.einsum('nc,ck->nk', [q, self.queue.clone().detach()])
-
-        # logits: Nx(1+K)
-        logits = torch.cat([l_pos, l_neg], dim=1)
-
-        # apply temperature
-        logits /= self.T
-
-        # labels: positive key indicators
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
-
-        loss = F.cross_entropy(logits, labels)
-
-        # dequeue and enqueue
-        self._dequeue_and_enqueue(k)
-
-        return loss
-
 
 def train(net, data_loader, train_optimizer, epoch, args):
     net.train()
@@ -361,10 +360,10 @@ class ISPY1Dataset(torch.utils.data.Dataset):
 # Move all the execution code into a main() function
 def main():
     # Data loading
-    train_transform = MRITransform()
-    train_data = ISPY1Pair(json_path='path/to/ispy1_train_data.json', 
+    train_transform = MRITransform(size=(32, 32, 32))  # Smaller size
+    train_data = ISPY1Pair(json_path='non_mri_data.json', 
                           transform=train_transform,
-                          debug=True)  # Enable debug mode for testing
+                          debug=True)
     train_loader = DataLoader(
         train_data,
         batch_size=args.batch_size,
@@ -375,7 +374,7 @@ def main():
     )
 
     # Data loading for memory bank and testing
-    memory_data = ISPY1Dataset(json_path='path/to/ispy1_train_data.json', 
+    memory_data = ISPY1Dataset(json_path='non_mri_data.json', 
                               train=True, 
                               transform=train_transform)
     memory_loader = DataLoader(
@@ -386,7 +385,7 @@ def main():
         pin_memory=True
     )
 
-    test_data = ISPY1Dataset(json_path='path/to/ispy1_test_data.json', 
+    test_data = ISPY1Dataset(json_path='non_mri_data.json', 
                             train=False, 
                             transform=train_transform)
     test_loader = DataLoader(
@@ -466,7 +465,7 @@ def main():
 if __name__ == '__main__':
     # Parse arguments
     parser = argparse.ArgumentParser(description='Train MoCo on ISPY1')
-    parser.add_argument('--batch-size', default=8, type=int, help='batch size')
+    parser.add_argument('--batch-size', default=4, type=int, help='batch size')
     parser.add_argument('--epochs', default=200, type=int)
     parser.add_argument('--lr', default=0.03, type=float)
     parser.add_argument('--moco-dim', default=128, type=int)
@@ -489,9 +488,10 @@ if __name__ == '__main__':
     args.cos = True
     
     # For testing purposes, override some args
-    args.epochs = 2  # Run fewer epochs
-    args.batch_size = 2  # Smaller batch size
-    args.moco_k = 16  # Smaller queue size
+    args.epochs = 2
+    args.batch_size = 2
+    args.moco_k = 16
+    args.moco_dim = 128
     
     # Setup results directory and logging
     results = {'train_loss': [], 'test_acc@1': []}
@@ -504,5 +504,3 @@ if __name__ == '__main__':
         
     # Run main function
     main()
-
-
