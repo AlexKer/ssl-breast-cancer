@@ -7,7 +7,7 @@ from resnet import resnet18, resnet34, resnet50
 
 ########################################################## Model ##########################################################
 class MoCov2(nn.Module):
-    def __init__(self, dim=128, resnet_type=50, K=54, m=0.999):
+    def __init__(self, dim=128, resnet_type=50, K=68, m=0.999):
         super(MoCov2, self).__init__()
         if resnet_type == 18:
             self.encoder_q = resnet18()
@@ -83,6 +83,17 @@ class MoCov2(nn.Module):
             k_3 = self.encoder_k(im_k_2).squeeze() # （N, dim）
             k_4 = self.encoder_k(im_k_3).squeeze() # （N, dim）
 
+        if len(q_1.shape) == 1:
+            q_1 = q_1.unsqueeze(0)
+            q_2 = q_2.unsqueeze(0)
+            q_3 = q_3.unsqueeze(0)
+            q_4 = q_4.unsqueeze(0)
+        if len(k_1.shape) == 1:
+            k_1 = k_1.unsqueeze(0)
+            k_2 = k_2.unsqueeze(0)
+            k_3 = k_3.unsqueeze(0)
+            k_4 = k_4.unsqueeze(0)
+        
         q = torch.cat([q_1, q_2, q_3, q_4], dim=1) # （N, dim * 4）
         q = F.normalize(q, dim=1)
         k = torch.cat([k_1, k_2, k_3, k_4], dim=1) # （N, dim * 4）
@@ -97,9 +108,7 @@ class MoCov2(nn.Module):
         labels = torch.zeros(logits.shape[0], dtype=torch.long).to(self.device) # （N, ）
         self._dequeue_and_enqueue(k)
 
-        loss = F.cross_entropy(logits, labels)
-
-        return loss
+        return logits, labels
         
 @torch.no_grad()
 def concat_all_gather(tensor):
@@ -148,7 +157,7 @@ class MoCov2DataAugmentation(nn.Module):
           tio.RandomFlip(axes=(0, 1, 2), flip_probability=0.5),
           tio.RandomAffine(scales=(0.9, 1.1), degrees=10),
           tio.RandomBlur(std=(0.1, 2.0)),
-          tio.CropOrPad((80, 230, 230)),  # if needed
+          tio.CropOrPad((80, 204, 204)),  # if needed
           tio.ZNormalization()
       ])
 

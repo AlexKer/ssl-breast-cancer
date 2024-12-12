@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 import logging
 import random
 from tqdm import tqdm
@@ -14,16 +15,25 @@ class trainer:
     def __init__(
             self,
             dataloader,
+            vis_loader,
             log_dir,
+            dim=128,
+            resnet_type=50,
+            K=68,
             epochs=50,
             warmup_epochs=5,
             lr=0.005,
             min_lr=1e-6,
-            shuffle_prob=0.8
+            shuffle_prob=0.8,
+            resume_from = None
     ):  
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = MoCov2().to(self.device)
+        self.model = MoCov2(dim=dim,
+                            resnet_type=resnet_type,
+                            K=K,
+                            ).to(self.device)
         self.dataloader = dataloader
+        self.vis_loader = vis_loader
         self.log_dir = log_dir
         self.epochs = epochs
         self.warmup_epochs = warmup_epochs
@@ -35,6 +45,9 @@ class trainer:
         self.setup_logging()
 
         self.current_epoch = 0
+
+        if resume_from:
+            self.load_checkpoint(resume_from)
 
     def setup_logging(self):
         """Setup logging directories and wandb"""
@@ -96,7 +109,7 @@ class trainer:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        self.best_valid_acurracy = checkpoint['best_valid_acurracy']
+        # self.best_valid_acurracy = checkpoint['best_valid_acurracy']
         
         logging.info(f'Loaded checkpoint from epoch {self.current_epoch}')
 
@@ -111,10 +124,10 @@ class trainer:
         for batch_index, batch in progress_bar:
             (t0_first_images, t1_first_images, t2_first_images, t3_first_images), _, _ = batch
 
-            first_images = t0_first_images.squeeze(1).to(self.device)
-            second_images = t1_first_images.squeeze(1).to(self.device)
-            third_images = t2_first_images.squeeze(1).to(self.device)
-            fourth_images = t3_first_images.squeeze(1).to(self.device)
+            first_images = t0_first_images.squeeze(1)
+            second_images = t1_first_images.squeeze(1)
+            third_images = t2_first_images.squeeze(1)
+            fourth_images = t3_first_images.squeeze(1)
             q_0, k_0 = self.argumentation(first_images)
             q_1, k_1 = self.argumentation(second_images)
             q_2, k_2 = self.argumentation(third_images)
@@ -143,7 +156,9 @@ class trainer:
             k_3 = k_3.unsqueeze(1)
 
             self.optimizer.zero_grad()
-            loss = self.model(q_0, q_1, q_2, q_3, k_0, k_1, k_2, k_3)
+            logits, labels = self.model(q_0.to(self.device), q_1.to(self.device), q_2.to(self.device), q_3.to(self.device), 
+                              k_0.to(self.device), k_1.to(self.device), k_2.to(self.device), k_3.to(self.device))
+            loss = F.cross_entropy(logits, labels)
             loss.backward()
             self.optimizer.step()
 
@@ -171,6 +186,8 @@ class trainer:
                     f'Epoch {epoch}: train_loss={train_loss:.4f}, '
                     f'lr={self.scheduler.get_last_lr()[0]:.8f}'
                 )
+
+                self.save_checkpoint()
 
         except KeyboardInterrupt:
             logging.info('Training interrupted by user')

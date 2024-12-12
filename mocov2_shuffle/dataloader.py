@@ -88,7 +88,7 @@ def collate_fn(batch):
     return (t0_first_images, t1_first_images, t2_first_images, t3_first_images), non_mri_features, flattened_labels    
             
 
-def get_data_loader(type : str, indices, data_list, batch_size=2, num_workers = 1):
+def get_data_loader(type : str, indices, data_list, batch_size=2, num_workers = 1, drop_last = False):
     num_transforms = 1
 
     if type == "train":
@@ -120,6 +120,6 @@ def get_data_loader(type : str, indices, data_list, batch_size=2, num_workers = 
 
     dataset = NumpyDataset(data_list=balanced_data_list, transform=transform, num_transforms = num_transforms)
 
-    data_loader = DataLoader(dataset, batch_size = batch_size, shuffle=(type == "train"), num_workers = num_workers, collate_fn = collate_fn)
+    data_loader = DataLoader(dataset, batch_size = batch_size, shuffle=(type == "train"), num_workers = num_workers, collate_fn = collate_fn, drop_last=drop_last)
 
     return data_loader
