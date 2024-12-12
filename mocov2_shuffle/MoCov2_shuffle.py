@@ -1,11 +1,8 @@
-import random
 import numpy as np
 import torchio as tio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.transforms import transforms
-from PIL import ImageFilter
 from resnet import resnet18, resnet34, resnet50
 
 ########################################################## Model ##########################################################
@@ -25,8 +22,9 @@ class MoCov2(nn.Module):
         self.K = K
         self.m = m
         self.T = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        reduce_out_features = self.encoder_q.reduce[3].out_features
+        reduce_out_features = self.encoder_q.reduce[2].out_features
         original_reduce_q = self.encoder_q.reduce[:4]
         self.encoder_q.reduce = nn.Sequential(
             original_reduce_q,
@@ -35,7 +33,7 @@ class MoCov2(nn.Module):
             nn.Linear(reduce_out_features, dim)
         )
 
-        reduce_out_features = self.encoder_k.reduce[3].out_features
+        reduce_out_features = self.encoder_k.reduce[2].out_features
         original_reduce_k = self.encoder_k.reduce[:4]
         self.encoder_k.reduce = nn.Sequential(
             original_reduce_k,
@@ -48,7 +46,7 @@ class MoCov2(nn.Module):
             param_k.data.copy_(param_q.data)
             param_k.requires_grad = False
 
-        self.register_buffer("queue", torch.randn(dim, K))
+        self.register_buffer("queue", torch.randn(dim * 4, K))
         self.queue = F.normalize(self.queue, dim=0)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
@@ -96,7 +94,7 @@ class MoCov2(nn.Module):
         logits = torch.cat([l_pos, l_neg], dim=1) # （N, K+1）
         logits /= self.T
 
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda() # （N, ）
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).to(self.device) # （N, ）
         self._dequeue_and_enqueue(k)
 
         loss = F.cross_entropy(logits, labels)
@@ -150,7 +148,7 @@ class MoCov2DataAugmentation(nn.Module):
           tio.RandomFlip(axes=(0, 1, 2), flip_probability=0.5),
           tio.RandomAffine(scales=(0.9, 1.1), degrees=10),
           tio.RandomBlur(std=(0.1, 2.0)),
-          tio.CropOrPad((60, 230, 230)),  # if needed
+          tio.CropOrPad((80, 230, 230)),  # if needed
           tio.ZNormalization()
       ])
 

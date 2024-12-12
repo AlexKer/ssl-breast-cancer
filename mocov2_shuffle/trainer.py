@@ -21,18 +21,20 @@ class trainer:
             min_lr=1e-6,
             shuffle_prob=0.8
     ):  
-        self.model = MoCov2().cuda()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = MoCov2().to(self.device)
         self.dataloader = dataloader
         self.log_dir = log_dir
         self.epochs = epochs
         self.warmup_epochs = warmup_epochs
         self.lr = lr
         self.min_lr = min_lr
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.shuffle_prob = shuffle_prob
         self.argumentation = MoCov2DataAugmentation()
         self._setup_optimizer_and_scheduler()
         self.setup_logging()
+
+        self.current_epoch = 0
 
     def setup_logging(self):
         """Setup logging directories and wandb"""
@@ -80,7 +82,7 @@ class trainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
-            'best_valid_acurracy': self.best_valid_acurracy,
+            # 'best_valid_acurracy': self.best_valid_acurracy
         }
         checkpoint_path = self.log_dir / 'checkpoint.pth'
         torch.save(checkpoint, checkpoint_path)
@@ -107,31 +109,45 @@ class trainer:
 
         progress_bar = tqdm(enumerate(self.dataloader), total=len(self.dataloader), desc=f"Epoch {self.current_epoch}/{self.epochs}")
         for batch_index, batch in progress_bar:
-            images, _ = batch
+            (t0_first_images, t1_first_images, t2_first_images, t3_first_images), _, _ = batch
 
-            batch_size, num_samples, *rest = images.shape
-            images = images.view(batch_size * num_samples, *rest)  # Now shape: (18, 4, 60, 230, 230)
-
-            first_images = images[:, 0, :, :, :].cuda()
-            second_images = images[:, 1, :, :, :].cuda()
-            third_images = images[:, 2, :, :, :].cuda()
-            fourth_images = images[:, 3, :, :, :].cuda()
-
+            first_images = t0_first_images.squeeze(1).to(self.device)
+            second_images = t1_first_images.squeeze(1).to(self.device)
+            third_images = t2_first_images.squeeze(1).to(self.device)
+            fourth_images = t3_first_images.squeeze(1).to(self.device)
             q_0, k_0 = self.argumentation(first_images)
             q_1, k_1 = self.argumentation(second_images)
             q_2, k_2 = self.argumentation(third_images)
             q_3, k_3 = self.argumentation(fourth_images)
 
             qs = np.array([q_0, q_1, q_2, q_3])
+            condition = False
             if random.random() < self.shuffle_prob:
+                condition = True
                 q_0, q_1, q_2, q_3 = qs[kendall_tau_distance(10)]
+            
+            if condition:
+                q_0 = torch.from_numpy(q_0).unsqueeze(1)
+                q_1 = torch.from_numpy(q_1).unsqueeze(1)
+                q_2 = torch.from_numpy(q_2).unsqueeze(1)
+                q_3 = torch.from_numpy(q_3).unsqueeze(1)
+            else:
+                q_0 = q_0.unsqueeze(1)
+                q_1 = q_1.unsqueeze(1)
+                q_2 = q_2.unsqueeze(1)
+                q_3 = q_3.unsqueeze(1)
+
+            k_0 = k_0.unsqueeze(1)
+            k_1 = k_1.unsqueeze(1)
+            k_2 = k_2.unsqueeze(1)
+            k_3 = k_3.unsqueeze(1)
 
             self.optimizer.zero_grad()
             loss = self.model(q_0, q_1, q_2, q_3, k_0, k_1, k_2, k_3)
             loss.backward()
             self.optimizer.step()
 
-            total_loss += loss.item
+            total_loss += loss.item()
             progress_bar.set_postfix({
                 'loss': f'{loss.item():.4f}',
                 'avg_loss': f'{total_loss / (batch_index + 1):.4f}',
@@ -140,11 +156,11 @@ class trainer:
         return total_loss / len(self.dataloader)
 
     def train(self):
-        logging.info(f'Starting training with config:\n{vars(self.config)}')
+        logging.info(f'Starting training')
         logging.info(f'Model parameters: {sum(p.numel() for p in self.model.parameters())}')
         
         try:
-            for epoch in range(self.current_epoch, self.config.epochs):
+            for epoch in range(self.current_epoch, self.epochs):
                 self.current_epoch = epoch
                 logging.info(f'Starting epoch {epoch}')
                 
