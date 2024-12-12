@@ -13,7 +13,7 @@ from datetime import datetime
 import heapq
 from tqdm import tqdm
 
-SAVE_DIR = ""
+SAVE_DIR = "save_dir"
 
 '''
 Function that takes in a path to a dicom file and returns the acquisition time of it. 
@@ -41,8 +41,8 @@ def get_acquisition_time(dicom_file):
 Get the patient data of all level three patients, filtered on uni-lateral 
 '''
 def get_level_3_patients(clinical_data_dir : str):
-    outcome_df = pd.read_excel(clinical_data_dir, sheet_name = "level3_Aim1_Outcome_20150715")
-    clinical_df = pd.read_excel(clinical_data_dir, sheet_name = "Curated DS level3 PatClin")
+    outcome_df = pd.read_excel(clinical_data_dir, sheet_name = "TCIA Outcomes Subset")
+    clinical_df = pd.read_excel(clinical_data_dir, sheet_name = "TCIA Patient Clinical Subset")
     clinical_df = clinical_df[clinical_df["BilateralCa"] == 0]
 
     patients = set()
@@ -153,8 +153,10 @@ def save_npy(images, patient_number, timepoint, phase):
         dicom_data = pydicom.dcmread(image_path)
         return dicom_data.pixel_array
     try:
+        if not os.path.exists(SAVE_DIR):
+                os.makedirs(SAVE_DIR)
         volume = np.array([load_dicom_as_array(path) for path in images])
-        save_path = SAVE_DIR + f"{patient_number}_t{timepoint}_{phase}.npy"
+        save_path = os.path.join(SAVE_DIR,f"{patient_number}_t{timepoint}_{phase}.npy")
         np.save(save_path, volume)
     except IsADirectoryError:
         print("patient ", patient_number)
@@ -235,7 +237,7 @@ def save_as_dicom_and_npy(level_three_patient_set : set, root_dir: str, save_pat
         
         t_0_saved, t_1_saved, t_2_saved, t_3_saved = False, False, False, False
 
-        for idx, timepoint in enumerate(timepoints_sorted[:2]):
+        for idx, timepoint in enumerate(timepoints_sorted[:]):
             timepoint_folder = glob.glob(timepoint + "/*")
             ser_pe1_folders = [folder for folder in timepoint_folder if "SER" in folder or "PE1" in folder or "PE2" in folder]           
             
@@ -397,7 +399,7 @@ def save_as_dicom_and_npy(level_three_patient_set : set, root_dir: str, save_pat
                 else:
                     t_3_saved = True
                         
-        if t_0_saved and t_1_saved:
+        if t_0_saved and t_1_saved and t_2_saved and t_3_saved: 
             patients_with_t0_t1.add(patient_number)
         
 
@@ -556,19 +558,21 @@ def main():
     '''
     READ IN THE IMAGES FROM ISPY1 AND SAVE THEM AS DICOM IMAGES
     '''
-    ispy1_dir = ""
-    level_three_clinical_data = ""
+    ispy1_dir = "ISPY1"
+    level_three_clinical_data = "clinical_data.xlsx"
     patient_data, patients = get_level_3_patients(level_three_clinical_data)
     print(len(patients))
 
     
-    all_four_timepoints = save_as_dicom_and_npy(level_three_patient_set=patients, root_dir=ispy1_dir)
+    all_four_timepoints = save_as_dicom_and_npy(level_three_patient_set=patients, root_dir=ispy1_dir, save_path=SAVE_DIR)
     # print("Cohort 1 number of patients saved with all four phases: ", len(all_four_timepoints), "out of ", len(patients), "patients")
 
     patient_set = []
-    for image in sorted(glob.glob(SAVE_DIR + "/*")):
-        pid = int(image.split("/")[-1].split(".")[0].split("_")[0])
-        patient_set.append(pid)
+    for image in sorted(glob.glob(os.path.join(SAVE_DIR, "*"))):
+        if os.path.isfile(image):  # Ensure we're processing files, not directories
+            # Extract patient ID by removing the 'save_dir' part of the file name
+            pid = int(image.split("/")[-1].split("_")[0].replace("save_dir", ""))
+            patient_set.append(pid)
     
     patient_count = Counter(patient_set)
 
@@ -584,7 +588,7 @@ def main():
     create_json(
         saved_patients,
         patient_data,
-        output_path = ''
+        output_path = 'non_mri_data2.json'
     )
 
    
