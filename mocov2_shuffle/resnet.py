@@ -114,7 +114,8 @@ class ResNet(nn.Module):
                  block,
                  layers,
                  shortcut_type='B',
-                 no_cuda = False):
+                 no_cuda = False,
+                 reduce=True):
         self.inplanes = 64
         self.no_cuda = no_cuda
         super(ResNet, self).__init__()
@@ -138,14 +139,16 @@ class ResNet(nn.Module):
             block, 512, layers[3], shortcut_type, stride=1, dilation=4)
         
         self.pool = nn.AdaptiveAvgPool3d((1, 1, 1)) 
+        self.reduce = reduce
 
-        self.reduce = nn.Sequential(
-            nn.Linear(2048, 500),
-            nn.ReLU(inplace=True),
-            nn.Linear(500, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 10),
-        )
+        if reduce:
+            self.reduce = nn.Sequential(
+                nn.Linear(2048, 500),
+                nn.ReLU(inplace=True),
+                nn.Linear(500, 128),
+                nn.ReLU(inplace=True),
+                nn.Linear(128, 10),
+            )
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -200,7 +203,8 @@ class ResNet(nn.Module):
         # print(f"before pooling shape {x.shape}")
         x = self.pool(x).squeeze()
 
-        x = self.reduce(x)
+        if self.reduce:
+            x = self.reduce(x)
         return x
 
 def resnet10(**kwargs):
