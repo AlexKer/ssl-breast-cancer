@@ -25,7 +25,8 @@ class trainer:
             lr=0.005,
             min_lr=1e-6,
             shuffle_prob=0.8,
-            resume_from = None
+            resume_from = None,
+            resetLR = False
     ):  
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = MoCov2(dim=dim,
@@ -43,6 +44,7 @@ class trainer:
         self.argumentation = MoCov2DataAugmentation()
         self._setup_optimizer_and_scheduler()
         self.setup_logging()
+        self.resetLR = resetLR
 
         self.current_epoch = 0
 
@@ -107,11 +109,22 @@ class trainer:
         
         self.current_epoch = checkpoint['epoch']
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        # self.best_valid_acurracy = checkpoint['best_valid_acurracy']
+        if self.resetLR:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.lr
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.epochs - self.current_epoch,
+                eta_min=self.min_lr
+            )
+        else:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        self.best_valid_acurracy = checkpoint['best_valid_acurracy']
         
-        logging.info(f'Loaded checkpoint from epoch {self.current_epoch}')
+        logging.info(f'Loaded checkpoint from epoch {self.current_epoch} '
+                    f'with best loss {self.best_valid_acurracy:.4f}')
 
     def train_one_epoch(self):
         self.model.train()
