@@ -7,7 +7,7 @@ from resnet import resnet18, resnet34, resnet50
 
 ########################################################## Model ##########################################################
 class MoCov2(nn.Module):
-    def __init__(self, dim=128, resnet_type=50, K=68, m=0.999):
+    def __init__(self, dim=128, resnet_type=50, K=144, m=0.999):
         super(MoCov2, self).__init__()
         if resnet_type == 18:
             self.encoder_q = resnet18()
@@ -49,6 +49,7 @@ class MoCov2(nn.Module):
         self.register_buffer("queue", torch.randn(dim * 4, K))
         self.queue = F.normalize(self.queue, dim=0)
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+        print(f"The queue size is {self.queue.shape}")
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):

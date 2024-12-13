@@ -12,7 +12,7 @@ def main(json_file,
          min_lr = 1e-6, 
          shuffle_prob = 0.8, 
          dim = 128, 
-         K = 68,
+         K = 144,
          resume_from = None,
          resetLR = False):
 

@@ -19,11 +19,11 @@ class trainer:
             log_dir,
             dim=128,
             resnet_type=50,
-            K=68,
+            K=144,
             epochs=50,
             warmup_epochs=5,
-            lr=0.005,
-            min_lr=1e-6,
+            lr=1e-4,
+            min_lr=1e-7,
             shuffle_prob=0.8,
             resume_from = None,
             resetLR = False
@@ -45,6 +45,7 @@ class trainer:
         self._setup_optimizer_and_scheduler()
         self.setup_logging()
         self.resetLR = resetLR
+        self.lis = []
 
         self.current_epoch = 0
 
@@ -97,7 +98,7 @@ class trainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
-            # 'best_valid_acurracy': self.best_valid_acurracy
+            'lis': self.lis,
         }
         checkpoint_path = self.log_dir / 'checkpoint.pth'
         torch.save(checkpoint, checkpoint_path)
@@ -121,10 +122,8 @@ class trainer:
         else:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        self.best_valid_acurracy = checkpoint['best_valid_acurracy']
-        
-        logging.info(f'Loaded checkpoint from epoch {self.current_epoch} '
-                    f'with best loss {self.best_valid_acurracy:.4f}')
+        self.lis = checkpoint['lis']
+        logging.info(f'Loaded checkpoint from epoch {self.current_epoch}')
 
     def train_one_epoch(self):
         self.model.train()
@@ -199,7 +198,7 @@ class trainer:
                     f'Epoch {epoch}: train_loss={train_loss:.4f}, '
                     f'lr={self.scheduler.get_last_lr()[0]:.8f}'
                 )
-
+                self.lis.append(train_loss)
                 self.save_checkpoint()
 
         except KeyboardInterrupt:
