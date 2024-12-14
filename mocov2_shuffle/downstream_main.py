@@ -23,7 +23,8 @@ def main(json_file,
     train_loader = get_data_loader("train", train_indices, data_list = data_list, batch_size = 2)
 
     MoCov2_model = MoCov2()
-    MoCov2_model.load_state_dict(model_path)
+    checkpoint = torch.load(model_path)
+    MoCov2_model.load_state_dict(checkpoint['model_state_dict'])
     downstream_model = resnet50(reduce=False)
 
     state_dict = MoCov2_model.encoder_q.state_dict()
