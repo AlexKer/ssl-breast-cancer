@@ -13,6 +13,9 @@ import numpy as np
 from tqdm import tqdm
 from preprocess_ispy1 import SAVE_DIR  # Import the save directory from preprocess_ispy1
 
+# We did not get this file to run, try moco_shuffle with shuffle_prob - 0.0 
+
+
 # Define device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
