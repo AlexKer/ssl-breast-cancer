@@ -8,7 +8,7 @@ class Model(nn.Module):
 
         self.encoder = resnet
 
-        output_channels = 2048
+        output_channels = 128
         '''
         FCL FOR PROCESSING OUTPUT OF ENCODER
         '''
